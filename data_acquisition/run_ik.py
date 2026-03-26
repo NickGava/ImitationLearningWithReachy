@@ -1,46 +1,29 @@
 '''
-run_ik.py  (v3)
+run_ik.py
 =============================================================================
 Offline IK solver with dual constraint: wrist position + elbow position.
-Head gaze point is passed through unchanged (no IK needed).
 
-Fully offline — no Unity, no ReachySDK required.
 The FK is re-implemented in pure numpy from the Reachy URDF; the IK is
 solved frame-by-frame via numerical optimisation (scipy L-BFGS-B).
 
 --- Forward Kinematics ---
-The FK chain propagates a 4×4 homogeneous transform from the torso origin
-through the 7 arm joints using Rodrigues rotation matrices.
-Joint positions and orientations are read at three points in the chain:
-
-  Joint           origin (relative to parent)    rotation axis
-  --------------- ------------------------------ ---------------
-  shoulder_pitch  (0, ∓0.19, 0)                  Y    ← y-offset: -0.19 right / +0.19 left
-  shoulder_roll   (0,  0,     0)                  X
-  arm_yaw         (0,  0,     0)                  Z
-  elbow_pitch     (0,  0,  -0.28)                 Y    ← elbow position sampled here
-  forearm_yaw     (0,  0,     0)                  Z
-  wrist_pitch     (0,  0,  -0.25)                 Y    ← wrist position sampled here
-  wrist_roll      (0,  0,  -0.0325)               X    ← end-effector orientation sampled here
+The FK chain propagates a 4x4 homogeneous transform from the torso origin
+through the 7 arm joints using rotation matrices R(u,θ).
 
 --- Optimisation ---
 For each frame, L-BFGS-B minimises a weighted cost over the 7 joint angles:
-
-  cost = W_WRIST_POS · ‖wrist_fk − wrist_target‖²
-       + W_ELBOW_POS · ‖elbow_fk − elbow_target‖²
-       + W_WRIST_ORI · ‖R_fk − R_target‖²          (disabled by default, W=0)
-       + W_SMOOTH    · ‖q − q_prev‖²                (regularisation)
+  cost = W_WRIST_POS · ‖wrist_fk - wrist_target‖²
+       + W_ELBOW_POS · ‖elbow_fk - elbow_target‖²
+       + W_WRIST_ORI · ‖R_fk - R_target‖²        
+       + W_SMOOTH    · ‖q - q_prev‖²             
 
   Joint limits are enforced as hard bounds in the optimiser.
-  The solution of the previous frame is used as warm start (q0 = q_prev),
-  which improves both speed and temporal consistency of the trajectory.
-  If a frame does not converge (cost > 1e-4), the previous angles are kept.
+  The solution of the previous frame is used as warm start (q0 = q_prev).
+  If a frame does not converge (success=False and cost ≥ 1e-4), the previous angles are kept.
 
 --- Head ---
 The head gaze point (head_x, head_y, head_z) from arms_mapped.csv is
-passed through to the output without modification. It represents the 3D
-point in the Reachy torso frame that the head should look at, and is
-consumed directly by run_simulation.py via lookAt(x, y, z).
+passed through to the output without modification. 
 
 --- Input / Output ---
 Input:
@@ -48,14 +31,6 @@ Input:
 
 Output:
   data/landmarks/subject_XXX/exercise_XXX/video_XXX/joint_ik.csv
-
-Each output row:
-  frame, timestamp,
-  r_shoulder_pitch, r_shoulder_roll, r_arm_yaw,
-  r_elbow_pitch, r_forearm_yaw, r_wrist_pitch, r_wrist_roll, r_gripper,
-  l_shoulder_pitch, l_shoulder_roll, l_arm_yaw,
-  l_elbow_pitch, l_forearm_yaw, l_wrist_pitch, l_wrist_roll, l_gripper,
-  head_x, head_y, head_z
 '''
 
 import argparse
@@ -69,18 +44,16 @@ sys.path.append(str(Path(__file__).resolve().parent))
 from config import DATA_ROOT
 
 
-# ---------------------------------------------------------------------------
-# FK geometry — read from reachy.URDF
-# ---------------------------------------------------------------------------
+# FK geometry: read from reachy.URDF
 _FK_JOINTS = [
     # name            translation                      axis
     ('shoulder_pitch', None,                            np.array([0., 1., 0.])),
     ('shoulder_roll',  np.array([0., 0., 0.]),          np.array([1., 0., 0.])),
     ('arm_yaw',        np.array([0., 0., 0.]),          np.array([0., 0., 1.])),
-    ('elbow_pitch',    np.array([0., 0., -0.28]),       np.array([0., 1., 0.])),  # ← elbow
+    ('elbow_pitch',    np.array([0., 0., -0.28]),       np.array([0., 1., 0.])),  
     ('forearm_yaw',    np.array([0., 0., 0.]),          np.array([0., 0., 1.])),
-    ('wrist_pitch',    np.array([0., 0., -0.25]),       np.array([0., 1., 0.])),  # ← wrist pos
-    ('wrist_roll',     np.array([0., 0., -0.0325]),     np.array([1., 0., 0.])),  # ← wrist ori
+    ('wrist_pitch',    np.array([0., 0., -0.25]),       np.array([0., 1., 0.])),  
+    ('wrist_roll',     np.array([0., 0., -0.0325]),     np.array([1., 0., 0.])),  
 ]
 
 _ELBOW_JOINT_IDX = 3
@@ -92,13 +65,8 @@ SHOULDER_Y_OFFSET = {
     'left':   0.19,
 }
 
-# ---------------------------------------------------------------------------
 # Reachy joint constants
-# ---------------------------------------------------------------------------
-JOINT_NAMES = [
-    'shoulder_pitch', 'shoulder_roll', 'arm_yaw',
-    'elbow_pitch', 'forearm_yaw', 'wrist_pitch', 'wrist_roll',
-]
+JOINT_NAMES = ['shoulder_pitch', 'shoulder_roll', 'arm_yaw', 'elbow_pitch', 'forearm_yaw', 'wrist_pitch', 'wrist_roll']
 
 JOINT_LIMITS_DEG = {
     'right': np.array([
@@ -127,17 +95,13 @@ REST_DEG = {
     'left':  np.array([0.,  5., 0., -90., 0., 0., 0.]),
 }
 
-# ---------------------------------------------------------------------------
 # Loss weights
-# ---------------------------------------------------------------------------
 W_WRIST_POS = 1.0
 W_ELBOW_POS = 0.8
 W_WRIST_ORI = 0.005
 W_SMOOTH    = 0.05
 
-# ---------------------------------------------------------------------------
 # Output format
-# ---------------------------------------------------------------------------
 _ARM_IK_COLS = JOINT_NAMES + ['gripper']
 JOINTS_IK_HEADER = (
     ['frame', 'timestamp']
@@ -152,8 +116,8 @@ JOINTS_IK_HEADER = (
 # ---------------------------------------------------------------------------
 def _rot(axis: np.ndarray, angle_rad: float) -> np.ndarray:
     """
-    Rodrigues rotation matrix: rotate by angle_rad around unit vector axis.
-    Returns a 3×3 matrix.
+    Rotation matrix R(u,θ): rotate by angle_rad around unit vector axis.
+    Returns a 3x3 matrix.
     """
     c, s = np.cos(angle_rad), np.sin(angle_rad)
     x, y, z = axis
@@ -211,20 +175,18 @@ def _quat_to_R(q: np.ndarray) -> np.ndarray:
         [2*(x*z-y*w),   2*(y*z+x*w),   1-2*(x*x+y*y)],
     ])
 
-
 def _cost(q, side, target_elbow, target_wrist, target_R, prev_q):
     elbow_fk, wrist_fk, R_fk = fk(q, side)
     e_wrist_pos = np.sum((wrist_fk - target_wrist) ** 2)
     e_elbow_pos = np.sum((elbow_fk - target_elbow) ** 2)
     e_ori       = np.sum((R_fk     - target_R)     ** 2)
-    e_smooth    = np.sum((q        - prev_q)        ** 2)
+    e_smooth    = np.sum((q        - prev_q)       ** 2)
     return (
         W_WRIST_POS * e_wrist_pos
         + W_ELBOW_POS * e_elbow_pos
         + W_WRIST_ORI * e_ori
         + W_SMOOTH    * e_smooth
     )
-
 
 # ---------------------------------------------------------------------------
 # Per-arm IK loop
@@ -264,7 +226,7 @@ def _run_ik_arm(df: pd.DataFrame, prefix: str, side: str) -> np.ndarray:
         else:
             n_warn += 1
             print(f"  ⚠  frame {int(row['frame'])}: did not converge "
-                  f"(cost={result.fun:.5f}) — keeping previous angles")
+                  f"(cost={result.fun:.5f}) -- keeping previous angles")
             q_opt = prev_q
 
         prev_q     = q_opt
@@ -284,17 +246,14 @@ def _run_ik_arm(df: pd.DataFrame, prefix: str, side: str) -> np.ndarray:
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(
-        description="Offline IK solver — elbow + wrist dual constraint, pure numpy FK."
-    )
+    parser = argparse.ArgumentParser(description="Offline IK solver — elbow + wrist dual constraint, pure numpy FK.")
     parser.add_argument('--subject',  type=int, default=None)
     parser.add_argument('--exercise', type=int, default=None)
     parser.add_argument('--video',    type=int, default=None)
-    parser.add_argument('--test-fk',  action='store_true',
-                        help='Run a quick FK sanity check at rest pose and exit.')
+    parser.add_argument('--test-fk',  action='store_true', help='Run a quick FK sanity check at rest pose and exit.')
     args = parser.parse_args()
 
-    # --- FK sanity check ---
+    # FK sanity check
     if args.test_fk:
         for side in ('right', 'left'):
             q_rest = np.deg2rad(REST_DEG[side])
@@ -305,7 +264,7 @@ def main():
             print(f"  R tip :\n{R}\n")
         return
 
-    # --- Video ID ---
+    # Video ID
     try:
         subject_num  = args.subject  if args.subject  is not None else int(input("Subject number:  ").strip())
         exercise_num = args.exercise if args.exercise is not None else int(input("Exercise number: ").strip())
@@ -331,7 +290,7 @@ def main():
     df = pd.read_csv(mapped_path)
     print(f"Loaded {len(df)} frames from {mapped_path}\n")
 
-    # --- Run IK per arm ---
+    # Run IK per arm
     results = {}
     for side, prefix in [('right', 'r'), ('left', 'l')]:
         print(f"=== {side} arm ===")
@@ -345,7 +304,7 @@ def main():
         results[side] = _run_ik_arm(df, prefix, side)
         print(f"  IK complete.\n")
 
-    # --- Assemble output ---
+    # Assemble output
     out_rows = []
     for i, (_, row) in enumerate(df.iterrows()):
         r = [int(row['frame']), row['timestamp']]
@@ -354,7 +313,7 @@ def main():
         for side in ('right', 'left'):
             r += list(results[side][i]) if results[side] is not None else [np.nan] * 8
 
-        # Head: pass through gaze point unchanged
+        # Head: pass through gaze point
         r += [row.get('head_x', np.nan),
               row.get('head_y', np.nan),
               row.get('head_z', np.nan)]
@@ -365,7 +324,7 @@ def main():
     output_path = folder / "joint_ik.csv"
     df_out.to_csv(output_path, index=False)
 
-    print(f"Saved {len(df_out)} rows → {output_path}")
+    print(f"Saved {len(df_out)} rows -> {output_path}")
     print("Done.")
 
 

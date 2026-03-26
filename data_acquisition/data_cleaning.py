@@ -4,10 +4,10 @@ data_cleaning.py
 Data cleaning pipeline for extracted landmarks.
 
 For each video (pose.csv, right_hand.csv, left_hand.csv, face.csv):
-  1. Drop incomplete rows  — frames where MediaPipe returned no landmarks
-  2. Drop low-visibility frames (pose only) — coordinate present but unreliable
-  3. Jump detection  — remove frames with sudden, physically impossible shifts
-  4. Smoothing  — One Euro Filter on all coordinate columns
+  1. Drop incomplete rows: frames where MediaPipe returned no landmarks
+  2. Drop low-visibility frames (pose only): coordinate present but unreliable
+  3. Jump detection: remove frames with sudden, physically impossible shifts
+  4. Smoothing: One Euro Filter on all coordinate columns (visibility excluded)
 
 Input:
   data/landmarks/subject_XXX/exercise_XXX/video_XXX/{pose,right_hand,left_hand,face}.csv
@@ -15,8 +15,7 @@ Input:
 Output (same folder):
   data/landmarks/subject_XXX/exercise_XXX/video_XXX/{pose,right_hand,left_hand,face}_cleaned.csv
 
-Note: the 'frame' column retains the original video indices (gaps are expected
-and intentional — they preserve traceability to the source video).
+Note: the 'frame' column retains the original video indices (gaps are expected and intentional, they preserve traceability to the source video).
 '''
 
 import math
@@ -28,16 +27,16 @@ from config import DATA_ROOT
 # Tunable parameters
 # ---------------------------------------------------------------------------
 
-# --- Visibility filter (pose only) ---
-MIN_VISIBILITY = 0            # frames where any joint is below this are dropped
+# Visibility filter (pose only)
+MIN_VISIBILITY = 0.5           # frames where any joint is below this are dropped
 
-# --- Jump detection ---
+# Jump detection
 JUMP_FACTOR = 5.0               # drop frame if displacement > JUMP_FACTOR × median displacement
                                 # lower = stricter; raise if too many valid frames are removed
 
-# --- One Euro Filter ---
-ONE_EURO_MINCUTOFF = 1.0        # min_cutoff: lower  → smoother but more lag at rest
-ONE_EURO_BETA      = 0.007      # beta: higher → less lag during fast motion
+# One Euro Filter parameters
+ONE_EURO_MINCUTOFF = 1.0        # min_cutoff: lower -> smoother but more lag at rest
+ONE_EURO_BETA      = 0.007      # beta: higher -> less lag during fast motion
 ONE_EURO_DCUTOFF   = 1.0        # d_cutoff: cutoff for the derivative low-pass; usually left at 1.0
 
 # Fallback FPS if the source video cannot be opened
@@ -114,7 +113,7 @@ def _drop_low_visibility(df : pd.DataFrame, vis_cols : list) -> pd.DataFrame:
 def _drop_jumps(df: pd.DataFrame, xyz_cols: list) -> pd.DataFrame:
     """
     Remove frames where the L2 displacement (across all coordinates) from the
-    previous frame exceeds JUMP_FACTOR × median displacement.
+    previous frame exceeds JUMP_FACTOR x median displacement.
 
     Uses the median as the reference so outliers don't inflate the threshold.
     Gaps caused by missing frames (non-consecutive frame indices) are excluded
@@ -137,7 +136,7 @@ def _drop_jumps(df: pd.DataFrame, xyz_cols: list) -> pd.DataFrame:
     keep = np.ones(len(df), dtype=bool)
     for i, d in enumerate(deltas):
         if gaps[i]:
-            continue        # gap → not a real jump, skip
+            continue        # gap -> not a real jump, skip
         if d > thresh:
             keep[i + 1] = False
 
@@ -241,7 +240,7 @@ def main():
         'pose':       True,     # is_pose=True → enables visibility filter
         'right_hand': False,
         'left_hand':  False,
-        'face':       False,    # no visibility columns; jump detection on image coords
+        'face':       False,    
     }
 
     for name, is_pose in files.items():

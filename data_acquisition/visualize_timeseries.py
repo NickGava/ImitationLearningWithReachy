@@ -14,18 +14,12 @@ Each joint is plotted as a 3D trajectory where:
 
 Figures are saved as PNG in:
   data/landmarks/subject_XXX/exercise_XXX/video_XXX/plots/
-
-Usage example:
-  python visualize_timeseries.py
-  >>> Subject number:  1
-  >>> Exercise number: 1
-  >>> Video number:    1
 '''
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-# Non viene mai chiamato direttamente, ma è necessario per il plotting 3D -- noqa: F401 serve per silenziare il warning
+# Never called, but necessary for 3D plotting
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from matplotlib.gridspec import GridSpec
 from config import DATA_ROOT
@@ -75,7 +69,7 @@ def plot_joint_3d(ax, df, joint_name, has_visibility=True):
     z_col = f'{joint_name}_z'
     v_col = f'{joint_name}_vis' if has_visibility else None
 
-    # Drop rows where coordinates are missing (dropna is a pandas method)
+    # Drop rows where coordinates are missing
     required = [x_col, y_col, z_col]
     sub = df.dropna(subset=required)
 
@@ -122,7 +116,7 @@ def _equalize_axes(fig):
     """
     Makes x/y/z axes equal on each 3D subplot independently (cubic aspect).
     Each subplot is centred on its own data and given a uniform half-span,
-    so no axis is stretched — but subplots are not forced to share a scale.
+    so no axis is stretched, but subplots are not forced to share a scale.
     A 5% margin is added so trajectories never touch the border.
     """
     for ax in fig.axes:
@@ -150,11 +144,7 @@ def _equalize_axes(fig):
 # ---------------------------------------------------------------------------
 def build_pose_figure(df_pose, title):
     """
-    Creates the pose figure with layout:
-        [     nose     ]
-        [ L_sh ][ R_sh ]
-        [ L_el ][ R_el ]
-        [ L_wr ][ R_wr ]
+    Creates the pose figure layout
     """
     fig = plt.figure(figsize=(12, 14))
     fig.suptitle(f"Pose — {title}", fontsize=12, fontweight='bold')
@@ -182,9 +172,7 @@ def build_pose_figure(df_pose, title):
 
 def build_hand_figure(df_hand, hand_side, title):
     """
-    Creates a hand figure with layout:
-        [ thumb_tip ][ index_tip ]  (row 0, 2 plots centered)
-        [ wrist ][ index_mcp ][ pinky_mcp ]  (row 1, 3 plots)
+    Creates a hand figure layout
     """
     fig = plt.figure(figsize=(14, 8))
     fig.suptitle(f"{hand_side} — {title}", fontsize=12, fontweight='bold')
@@ -213,7 +201,7 @@ def build_hand_figure(df_hand, hand_side, title):
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    # --- User input ---
+    # User input
     print("=== Time Series Visualizer ===")
     try:
         subject_num  = int(input("Subject number:  ").strip())
@@ -231,7 +219,7 @@ def main():
 
     title = f"{subject_name} / {exercise_name} / {video_name}"
 
-    # --- Load data ---
+    # Load data
     df_pose  = load_csv(landmarks_folder / 'pose.csv')
     df_rhand = load_csv(landmarks_folder / 'right_hand.csv')
     df_lhand = load_csv(landmarks_folder / 'left_hand.csv')
@@ -240,7 +228,7 @@ def main():
         print("No data found. Check subject, exercise and video numbers.")
         return
 
-    # --- Build and save figures ---
+    # Build and save figures
     output_dir = landmarks_folder / 'plots'
     output_dir.mkdir(parents=True, exist_ok=True)
 

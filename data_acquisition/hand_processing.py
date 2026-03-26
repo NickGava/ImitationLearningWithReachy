@@ -5,43 +5,27 @@ Computes hand features from cleaned hand landmark CSVs.
 
 For each hand (right and left), two features are computed per frame:
 
-  1. Gripper angle  — motor angle (degrees) ready to send to Reachy.
+  1. Gripper angle: motor angle (degrees) ready to send to Reachy.
                       Computed from the normalized pinch distance between thumb
-                      tip and index tip (scale-invariant, normalized by the
-                      wrist->index_mcp distance), then mapped linearly to the
-                      Reachy motor range:
+                      tip and index tip, then mapped linearly to the
+                      Reachy motor range.
 
-                        Right hand:  open = -69°,  closed = 20°
-                        Left  hand:  open =  69°,  closed = -20°
-
-                      where abs(69) corresponds to fully open gripper.
-
-  2. Hand orientation — quaternion [q_w, q_x, q_y, q_z] describing the
+  2. Hand orientation: quaternion [q_w, q_x, q_y, q_z] describing the
                         orientation of the hand reference frame relative to the
-                        camera frame. Built from three landmarks:
-                          - wrist      (origin)
-                          - index_mcp  (defines finger / forward direction)
-                          - pinky_mcp  (defines lateral direction)
-
+                        camera frame.
                         Reference frame construction:
                           e1 = normalize(index_mcp − wrist)       forward
                           e3 = normalize(e1 × (pinky_mcp − wrist)) palm normal
                           e2 = e3 × e1                             lateral
-
                         The rotation matrix R = [e1 | e2 | e3] is then
                         converted to a unit quaternion (w, x, y, z).
-
-Note on MediaPipe hand coordinates:
-  Hand landmarks use normalized image coordinates — x and y are reliable,
-  z is a relative depth estimate (less accurate). Orientation on the XY plane
-  is high quality; roll (depth axis) should be interpreted with more caution.
 
 Input:
   data/landmarks/subject_XXX/exercise_XXX/video_XXX/{right,left}_hand_cleaned.csv
 
 Output (same folder):
-  data/landmarks/subject_XXX/exercise_XXX/video_XXX/right_hand_features.csv
-  data/landmarks/subject_XXX/exercise_XXX/video_XXX/left_hand_features.csv
+  data/landmarks/subject_XXX/exercise_XXX/video_XXX/right_hand_mapped.csv
+  data/landmarks/subject_XXX/exercise_XXX/video_XXX/left_hand_mapped.csv
 
 Each output row:
   frame, timestamp, gripper_angle, q_w, q_x, q_y, q_z
@@ -53,8 +37,6 @@ from config import DATA_ROOT
 
 # ---------------------------------------------------------------------------
 # Reachy gripper motor ranges (degrees)
-#   open  = abs(69°) — fully open gripper
-#   closed = abs(20°) — fully closed gripper
 # ---------------------------------------------------------------------------
 GRIPPER_RANGE = {
     'right_hand': {'open': -40.0, 'closed':  20.0},
@@ -63,7 +45,6 @@ GRIPPER_RANGE = {
 
 # Output header
 FEATURES_HEADER = ['frame', 'timestamp', 'gripper_angle', 'q_w', 'q_x', 'q_y', 'q_z']
-
 
 # ---------------------------------------------------------------------------
 # Math helpers
@@ -113,21 +94,9 @@ def _rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Per-frame feature computation
 # ---------------------------------------------------------------------------
-def _compute_gripper_angle(
-    thumb_tip : np.ndarray,
-    index_tip : np.ndarray,
-    wrist     : np.ndarray,
-    index_mcp : np.ndarray,
-    side      : str
-) -> float:
+def _compute_gripper_angle(thumb_tip: np.ndarray, index_tip: np.ndarray, wrist: np.ndarray, index_mcp: np.ndarray, side: str) -> float:
     """
     Computes the Reachy gripper motor angle (degrees) for a single frame.
-
-    Steps:
-      1. Compute normalized pinch closure in [0.0, 1.0]
-           0.0 = fully open, 1.0 = fully closed
-      2. Map linearly to the Reachy motor range for the given side:
-           angle = open + closure * (closed - open)
 
     Parameters:
         thumb_tip, index_tip, wrist, index_mcp : 3D landmark positions
@@ -142,7 +111,7 @@ def _compute_gripper_angle(
     if scale < 1e-9:
         closure = 0.0
     else:
-        # Raw ratio: 0 = closed, large = open → invert and clip to [0, 1]
+        # Raw ratio: 0 = closed, large = open -> invert and clip to [0, 1]
         closure = float(np.clip(1.0 - pinch_dist / scale, 0.0, 1.0))
     
     r = GRIPPER_RANGE[side]
@@ -151,19 +120,17 @@ def _compute_gripper_angle(
 
 def _compute_orientation(wrist : np.ndarray, index_mcp : np.ndarray, pinky_mcp : np.ndarray, side = 'right_hand') -> np.ndarray:
     """
-    Builds a hand reference frame from three landmarks and returns the
-    corresponding unit quaternion [w, x, y, z].
+    Builds a hand reference frame from three landmarks and returns the corresponding unit quaternion [w, x, y, z].
 
-     Frame construction:
-      e3 = normalize(-(index_mcp - wrist))           forward (finger direction)
-      e1 = normalize(-(pinky_mcp - wrist) x e3)    palm normal (out of palm)
+    Frame construction:
+      e3 = normalize(-(index_mcp - wrist))        forward (finger direction)
+      e1 = normalize(±(pinky_mcp - wrist) x e3)   palm normal (out of palm)
       e2 = e3 x e1                                lateral (completes frame)
     """
     v_forward = index_mcp - wrist
     v_lateral = pinky_mcp - wrist
 
     e3 = _normalize(-v_forward)
-    
     sign = -1.0 if side == 'right_hand' else +1.0
     e1 = _normalize(np.cross(sign * v_lateral, e3))
     e2 = np.cross(e3, e1)
@@ -182,7 +149,7 @@ def _process_hand(input_path, output_path, side: str) -> None:
     Parameters:
         input_path  : path to {side}_cleaned.csv
         output_path : path to {side}_features.csv
-        side        : 'right_hand' or 'left_hand' — determines gripper motor range
+        side        : 'right_hand' or 'left_hand'
     """
     df = pd.read_csv(input_path)
     n_loaded = len(df)
@@ -219,7 +186,6 @@ def _process_hand(input_path, output_path, side: str) -> None:
     print(f"rows saved: {len(out)} / {n_loaded}")
     print(f"→ {output_path}")
 
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -255,7 +221,6 @@ def main():
         print()
 
     print("Done.")
-
 
 if __name__ == "__main__":
     main()

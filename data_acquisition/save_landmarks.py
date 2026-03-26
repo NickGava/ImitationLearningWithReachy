@@ -1,30 +1,23 @@
 '''
 save_landmarks.py
 =============================================================================
-Handles CSV initialization and per-frame landmark saving for a recording
-session.
+Handles CSV initialization and per-frame landmark saving for a recording session.
 
 Four CSV files are created per video:
-  - pose.csv       : world-space coordinates (meters, origin between hips)
-                     of 9 body joints + visibility score
+  - pose.csv       : world-space coordinates (meters, origin between hips) of 9 body joints + visibility score
   - right_hand.csv : normalized coordinates of 5 right hand landmarks
   - left_hand.csv  : normalized coordinates of 5 left hand landmarks
   - face.csv       : normalized image coordinates of 5 Face Mesh landmarks
-                     used to compute head orientation in face_processing.py
 
-Each row represents one frame and includes:
-  - frame index and timestamp (seconds since epoch)
+Each row represents one frame and includes: frame index and timestamp (seconds since epoch)
 
-Each video corresponds to a single movement — the context (subject, exercise,
-video) is encoded in the folder path, not in the CSV columns.
+Each video corresponds to a single movement, the context (subject, exercise, video) is encoded in the folder path, not in the CSV columns.
 
-Rows with missing landmarks (landmark not detected) are written with only
-the metadata columns (frame, timestamp) and no coordinates — these incomplete
-rows are discarded in the data cleaning phase.
+Rows with missing landmarks (landmark not detected) are written with only the metadata columns (frame, timestamp) and no coordinates;
+these incomplete rows are discarded in the data cleaning phase.
 '''
 
 import csv
-import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -50,11 +43,6 @@ HAND_INDICES = {
     'pinky_mcp': 17,   # hand orientation
 }
 
-# MediaPipe Face Mesh landmark indices.
-# These landmarks come from results.face_landmarks (normalized image coords),
-# NOT from pose_world_landmarks.  Coordinates:
-#   x, y : normalized [0, 1] — x=0 left, y=0 top of image
-#   z    : relative depth, smaller = closer to camera
 FACE_INDICES = {
     'nose_tip':   4,    # approximate face origin
     'chin':     152,    # defines vertical axis (bottom)
@@ -74,7 +62,6 @@ HAND_HEADER = ['frame', 'timestamp']
 for name in HAND_INDICES:
     HAND_HEADER += [f'{name}_x', f'{name}_y', f'{name}_z']
 
-# Face landmarks have no visibility score
 FACE_HEADER = ['frame', 'timestamp']
 for name in FACE_INDICES:
     FACE_HEADER += [f'{name}_x', f'{name}_y', f'{name}_z']
@@ -89,8 +76,7 @@ def init_csv_files(video_folder):
     Returns a dict with the file paths.
 
     Parameters:
-        video_folder (str): folder path where to save the CSV files,
-                            e.g. "data/landmarks/subject_001/exercise_001/video_001"
+        video_folder (str): folder path where to save the CSV files, e.g. "data/landmarks/subject_001/exercise_001/video_001"
 
     Returns:
         dict: {'pose': Path, 'right_hand': Path, 'left_hand': Path, 'face': Path}
@@ -121,24 +107,24 @@ def init_csv_files(video_folder):
     return paths
 
 
-def save_frame(results, frame_idx, csv_paths):
+def save_frame(results, frame_idx, csv_paths, fps: float = 30.0):
     """
     Saves the landmarks of a single frame into the respective CSV files.
 
     Pose: uses pose_world_landmarks (coordinates in meters, origin between hips).
+    Hands: uses *_hand_landmarks (normalized image coordinates, no world space).
     Face: uses face_landmarks (normalized image coordinates, no world space).
 
-    If a landmark group is not detected, writes a row with only frame and
-    timestamp (empty row = frame to discard in the data cleaning phase).
+    If a landmark group is not detected, writes a row with only frame and timestamp.
 
     Parameters:
         results:     object returned by holistic.process()
         frame_idx:   integer index of the current frame
         csv_paths:   returned dict from init_csv_files()
     """
-    timestamp = time.time()     # seconds since epoch, e.g. 1709123456.789
+    timestamp = frame_idx / fps
 
-    # --- POSE (world space, meters) ---
+    # POSE (world space, meters) 
     with open(csv_paths['pose'], 'a', newline='') as f:
         writer = csv.writer(f)
         if results.pose_world_landmarks:
@@ -151,9 +137,8 @@ def save_frame(results, frame_idx, csv_paths):
         else:
             writer.writerow([frame_idx, timestamp])     # frame not detected
 
-    # --- HANDS (normalized image coords) ---
-    for side, key in [('right_hand_landmarks', 'right_hand'),
-                      ('left_hand_landmarks',  'left_hand')]:
+    # HANDS (normalized image coords)
+    for side, key in [('right_hand_landmarks', 'right_hand'), ('left_hand_landmarks',  'left_hand')]:
         with open(csv_paths[key], 'a', newline='') as f:
             writer = csv.writer(f)
             hand = getattr(results, side)
@@ -167,7 +152,7 @@ def save_frame(results, frame_idx, csv_paths):
             else:
                 writer.writerow([frame_idx, timestamp])     # hand not detected
 
-    # --- FACE (normalized image coords, Face Mesh 468 landmarks) ---
+    # FACE (normalized image coords)
     with open(csv_paths['face'], 'a', newline='') as f:
         writer = csv.writer(f)
         if results.face_landmarks:
