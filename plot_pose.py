@@ -22,26 +22,25 @@ Output (same folder):
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 from config import DATA_ROOT
 from ask_inputs import ask_inputs
 
+Y_PADDING = 0.02    # metres of padding above/below the shared Y range
+
 # Pose
 POSE_GROUPS = {
-    'Right side': ['nose', 'right_shoulder', 'right_elbow', 'right_wrist'],
-    'Left side':  ['nose', 'left_shoulder',  'left_elbow',  'left_wrist'],
+    'Right side': ['right_shoulder', 'right_elbow', 'right_wrist'],
+    'Left side':  ['left_shoulder',  'left_elbow',  'left_wrist'],
 }
 
-# Hand
-HAND_JOINTS = ['wrist', 'index_mcp', 'pinky_mcp', 'thumb_tip', 'index_tip']
-
 # Spatial dimensions plotted
-DIMS = [('x', 'X (m)'), ('y', 'Y (m)'), ('z', 'Z (m)')]
+DIMS = [('x', 'X - Left/Right (m)'), ('y', 'Y - Up/Down (m)'), ('z', 'Z - Forward/Backward (m)')]
 
 # Visual style
-_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-           '#8c564b', '#e377c2']
-_STYLES = ['-', '--', '-.', ':', '-', '--', '-.']
+_COLORS = [ '#2ca02c', '#e67e22', '#3498db']
+_STYLES = ['-.', '--', '-', ':', '-', '--', '-.']
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -100,25 +99,57 @@ def _plot_group(axes_col: list, df: pd.DataFrame, joints: list, has_visibility: 
                 label     = label,
             )
 
-def _style_grid(axes, col_titles, dim_labels, n_rows, n_cols) -> None:
+def _shared_ylim(df: pd.DataFrame, joints: list) -> tuple:
+    """Computes shared Y limits across all joints and dimensions."""
+    cols = []
+    for joint in joints:
+        for dim, _ in DIMS:
+            col = f'{joint}_{dim}'
+            if col in df.columns:
+                cols.append(col)
+    if not cols:
+        return -1.0, 1.0
+    values = df[cols].values.flatten()
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return -1.0, 1.0
+    return float(values.min()) - Y_PADDING, float(values.max()) + Y_PADDING
+
+
+def _style_grid(axes, col_titles, dim_labels, n_rows, n_cols, y_min, y_max) -> None:
     """
-    Applies consistent styling to a grid of Axes.
+    Applies consistent styling to a grid of Axes:
+    - shared Y scale across all subplots
+    - tick labels on every subplot
+    - Y label on left column only
+    - column title on top row only
+    - X label on bottom row only
     """
     for r in range(n_rows):
         for c in range(n_cols):
             ax = axes[r, c] if n_cols > 1 else axes[r]
-            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.4)
+
+            # __ Shared Y scale __
+            ax.set_ylim(y_min, y_max)
+            ax.yaxis.set_major_locator(ticker.AutoLocator())
+            ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(2))
+
+            # __ Tick labels everywhere __
+            ax.tick_params(axis='both', labelsize=8)
+
+            ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.7)
+            ax.grid(True, which='minor', linestyle=':',  linewidth=0.4, alpha=0.4)
             ax.legend(fontsize=7, loc='upper right', framealpha=0.7)
 
-            # Y-axis label - leftmost column only
+            # __ Y label: left column only __
             if c == 0:
                 ax.set_ylabel(dim_labels[r], fontsize=9)
 
-            # Column title - top row only
+            # __ Column title: top row only __
             if r == 0:
                 ax.set_title(col_titles[c], fontsize=10, fontweight='bold')
 
-            # X-axis label - bottom row only
+            # __ X label: bottom row only __
             if r == n_rows - 1:
                 ax.set_xlabel('Frame', fontsize=9)
 
@@ -128,50 +159,29 @@ def _style_grid(axes, col_titles, dim_labels, n_rows, n_cols) -> None:
 def build_pose_figure(df_pose: pd.DataFrame, title: str) -> plt.Figure:
     """
     Pose figure - 3 rows (X, Y, Z) x 2 columns (Right side / Left side).
-    Each subplot shows nose + shoulder + elbow + wrist for that body side.
+    Each subplot shows shoulder + elbow + wrist for that body side.
     """
-    groups    = list(POSE_GROUPS.items())       # [('Right side', [...]), ...]
+    groups    = list(POSE_GROUPS.items())
     n_cols    = len(groups)
     n_rows    = len(DIMS)
     dim_lbls  = [lbl for _, lbl in DIMS]
     col_names = [name for name, _ in groups]
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize  = (14, 9), sharex = True, sharey = "row")
-    fig.suptitle(f"Pose - {title}", fontsize=12, fontweight='bold')
+    # __ Shared Y limits across all joints and dimensions __
+    all_joints = [j for _, joints in groups for j in joints]
+    y_min, y_max = _shared_ylim(df_pose, all_joints)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 9), sharex=False, sharey=False)
+    fig.suptitle(f'Pose – {title}', fontsize=12, fontweight='bold')
 
     for col_idx, (_, joints) in enumerate(groups):
         col_axes = [axes[r, col_idx] for r in range(n_rows)]
         _plot_group(col_axes, df_pose, joints, has_visibility=True)
 
-    _style_grid(axes, col_names, dim_lbls, n_rows, n_cols)
+    _style_grid(axes, col_names, dim_lbls, n_rows, n_cols, y_min, y_max)
     fig.tight_layout()
     return fig
 
-def build_hand_figure(df_hand: pd.DataFrame, hand_side: str, title: str) -> plt.Figure:
-    """
-    Hand figure - 3 rows (X, Y, Z) x 1 column.
-    All 5 landmarks are drawn as separate lines.
-    """
-    n_rows   = len(DIMS)
-    
-    fig, axes = plt.subplots(n_rows, 1, figsize = (10, 8), sharex = True, sharey = False)
-    fig.suptitle(f"{hand_side} - {title}", fontsize=12, fontweight='bold')
-
-    _plot_group(axes, df_hand, HAND_JOINTS, has_visibility=False)
-
-    # Style manually (single column - axes is a 1-D array)
-    for r_idx, (_, ylabel) in enumerate(DIMS):
-        ax = axes[r_idx]
-        ax.set_ylabel(ylabel, fontsize=9)
-        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.4)
-        ax.legend(fontsize=7, loc='upper right', framealpha=0.7)
-        if r_idx == 0:
-            ax.set_title(hand_side, fontsize=10, fontweight='bold')
-        if r_idx == n_rows - 1:
-            ax.set_xlabel('Frame', fontsize=9)
-
-    fig.tight_layout()
-    return fig
 
 # ---------------------------------------------------------------------------
 # Main
@@ -185,10 +195,8 @@ def main():
 
     # Load data
     df_pose  = load_csv(landmarks_folder / 'pose_cleaned.csv')
-    df_rhand = load_csv(landmarks_folder / 'right_hand_cleaned.csv')
-    df_lhand = load_csv(landmarks_folder / 'left_hand_cleaned.csv')
 
-    if df_pose.empty and df_rhand.empty and df_lhand.empty:
+    if df_pose.empty:
         print("No data found. Check subject, exercise and video numbers.")
         return
 
@@ -199,23 +207,11 @@ def main():
     if not df_pose.empty:
         fig = build_pose_figure(df_pose, title)
         path = output_dir / 'pose.png'
+        # plt.show()
         fig.savefig(path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f"Saved: {path}")
 
-    if not df_rhand.empty:
-        fig = build_hand_figure(df_rhand, 'Right Hand', title)
-        path = output_dir / 'right_hand.png'
-        fig.savefig(path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        print(f"Saved: {path}")
-
-    if not df_lhand.empty:
-        fig = build_hand_figure(df_lhand, 'Left Hand', title)
-        path = output_dir / 'left_hand.png'
-        fig.savefig(path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        print(f"Saved: {path}")
 
     print("Done.")
 

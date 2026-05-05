@@ -48,7 +48,7 @@ import torch
 import torch.nn as nn
 
 from config import DATA_ROOT, REST_POSE, JOINT_COLS, HEAD_COLS
-from visualize_dataset_plot import _fk_figure
+from ik_strategy.plot_baseline_canonical import _fk_figure
 
 # ---------------------------------------------------------------------------
 # Constants

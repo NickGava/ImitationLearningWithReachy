@@ -31,8 +31,8 @@ GRIPPER_RANGE = {
 # Names of the joints of the robot
 # ---------------------------------------------------------------------------
 JOINT_COLS = [
-    'r_shoulder_pitch', 'r_shoulder_roll', 'r_arm_yaw', 'r_elbow_pitch', 'r_forearm_yaw', 'r_wrist_pitch', 'r_wrist_roll', 'r_gripper',
-    'l_shoulder_pitch', 'l_shoulder_roll', 'l_arm_yaw', 'l_elbow_pitch', 'l_forearm_yaw', 'l_wrist_pitch', 'l_wrist_roll', 'l_gripper',
+    'r_shoulder_pitch', 'r_shoulder_roll', 'r_arm_yaw', 'r_elbow_pitch',
+    'l_shoulder_pitch', 'l_shoulder_roll', 'l_arm_yaw', 'l_elbow_pitch',
 ]
 # Names of the coordinates of the head of the robot
 HEAD_COLS = ['head_x', 'head_y', 'head_z']
@@ -43,10 +43,18 @@ HEAD_COLS = ['head_x', 'head_y', 'head_z']
 REST_POSE: Dict[str, float] = {
     'r_shoulder_pitch':  0.0,  'r_shoulder_roll': -5.0,  'r_arm_yaw':     0.0,
     'r_elbow_pitch':   -90.0,  'r_forearm_yaw':    0.0,  'r_wrist_pitch':  0.0,
-    'r_wrist_roll':      0.0,  'r_gripper':      -40.0,
+    'r_wrist_roll':      0.0,  'r_gripper':      0.0,
     'l_shoulder_pitch':  0.0,  'l_shoulder_roll':  5.0,  'l_arm_yaw':     0.0,
     'l_elbow_pitch':   -90.0,  'l_forearm_yaw':    0.0,  'l_wrist_pitch':  0.0,
-    'l_wrist_roll':      0.0,  'l_gripper':       40.0,
+    'l_wrist_roll':      0.0,  'l_gripper':       0.0,
+}
+STARTING_POSE: Dict[str, float] = {
+    'r_shoulder_pitch':  -20.0,  'r_shoulder_roll': 0.0,  'r_arm_yaw':     0.0,
+    'r_elbow_pitch':   0.0,  'r_forearm_yaw':    0.0,  'r_wrist_pitch':  0.0,
+    'r_wrist_roll':      0.0,  'r_gripper':      0.0,
+    'l_shoulder_pitch':  -20.0,  'l_shoulder_roll':  0.0,  'l_arm_yaw':     0.0,
+    'l_elbow_pitch':   0.0,  'l_forearm_yaw':    0.0,  'l_wrist_pitch':  0.0,
+    'l_wrist_roll':      0.0,  'l_gripper':       0.0,
 }
 # Rest pose as a numpy array, without gripper
 REST_DEG = {

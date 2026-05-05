@@ -76,6 +76,15 @@ def main():
     recording = False
     frame_times = []
 
+    middle_clicked = [False]  # lista per mutabilità nel closure
+
+    def on_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_MBUTTONDOWN:
+            middle_clicked[0] = True
+
+    cv2.namedWindow("Reachy - Stereo Recording (left camera)")
+    cv2.setMouseCallback("Reachy - Stereo Recording (left camera)", on_mouse)
+
     try:
         while True:
             left  = reachy.left_camera.last_frame
@@ -107,11 +116,11 @@ def main():
 
             key = cv2.waitKey(1) & 0xFF
 
-            if key == ord(' '):
+            if key == ord(' ') or middle_clicked[0]:
+                middle_clicked[0] = False
                 if not recording:
                     # Start recording
                     # Use a placeholder FPS; we will re-compute and warn if needed.
-                    time.sleep(1)   # to position the user before starting
                     fps_guess = 30.0
                     writer_L = cv2.VideoWriter(str(path_L), FOURCC, fps_guess, (w, h))
                     writer_R = cv2.VideoWriter(str(path_R), FOURCC, fps_guess, (w, h))

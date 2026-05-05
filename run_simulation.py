@@ -71,20 +71,20 @@ HEAD_NEUTRAL_GAZE = (1.0, 0.0, 0.15)
 
 REST_ANGLES = {
     'right': {
-        'r_shoulder_pitch':  0.,
-        'r_shoulder_roll':  -5.,
+        'r_shoulder_pitch': -20.,
+        'r_shoulder_roll':   0.,
         'r_arm_yaw':         0.,
-        'r_elbow_pitch':   -90.,
+        'r_elbow_pitch':     0.,
         'r_forearm_yaw':     0.,
         'r_wrist_pitch':     0.,
         'r_wrist_roll':      0.,
         'r_gripper':         0.,
     },
     'left': {
-        'l_shoulder_pitch':  0.,
-        'l_shoulder_roll':   5.,
+        'l_shoulder_pitch': -20.,
+        'l_shoulder_roll':   0.,
         'l_arm_yaw':         0.,
-        'l_elbow_pitch':   -90.,
+        'l_elbow_pitch':     0.,
         'l_forearm_yaw':     0.,
         'l_wrist_pitch':     0.,
         'l_wrist_roll':      0.,
@@ -92,11 +92,15 @@ REST_ANGLES = {
     },
 }
 
+# JOINT_COLS = {
+#     'right': ['r_shoulder_pitch', 'r_shoulder_roll', 'r_arm_yaw',
+#               'r_elbow_pitch', 'r_forearm_yaw', 'r_wrist_pitch', 'r_wrist_roll', 'r_gripper'],
+#     'left':  ['l_shoulder_pitch', 'l_shoulder_roll', 'l_arm_yaw',
+#               'l_elbow_pitch', 'l_forearm_yaw', 'l_wrist_pitch', 'l_wrist_roll', 'l_gripper'],
+# }
 JOINT_COLS = {
-    'right': ['r_shoulder_pitch', 'r_shoulder_roll', 'r_arm_yaw',
-              'r_elbow_pitch', 'r_forearm_yaw', 'r_wrist_pitch', 'r_wrist_roll', 'r_gripper'],
-    'left':  ['l_shoulder_pitch', 'l_shoulder_roll', 'l_arm_yaw',
-              'l_elbow_pitch', 'l_forearm_yaw', 'l_wrist_pitch', 'l_wrist_roll', 'l_gripper'],
+    'right': ['r_shoulder_pitch', 'r_shoulder_roll', 'r_arm_yaw', 'r_elbow_pitch',],
+    'left':  ['l_shoulder_pitch', 'l_shoulder_roll', 'l_arm_yaw', 'l_elbow_pitch',],
 }
 
 ARM_OBJ     = {'right': lambda r: r.r_arm, 'left': lambda r: r.l_arm}
@@ -117,7 +121,7 @@ def _goto_rest(reachy: ReachySDK) -> None:
     goto(goal_positions=goal,
          duration=GOTO_REST_DURATION,
          interpolation_mode=InterpolationMode.MINIMUM_JERK)
-    time.sleep(GOTO_REST_DURATION + 0.1)
+    time.sleep(0.5)
 
     # Return head to neutral after arms have settled
     x, y, z = HEAD_NEUTRAL_GAZE
@@ -141,7 +145,7 @@ def _goto_first_frame(reachy: ReachySDK, first_row: pd.Series) -> None:
         goto(goal_positions=goal,
              duration=GOTO_REST_DURATION,
              interpolation_mode=InterpolationMode.MINIMUM_JERK)
-        time.sleep(GOTO_REST_DURATION + 0.1)
+        time.sleep(0.5)
 
     # Move head to first frame gaze
     hx = first_row.get('head_x', np.nan)
@@ -242,19 +246,21 @@ def main():
     # --- Move to first frame pose ---
     print("Moving to first frame pose…")
     _goto_first_frame(reachy, df.iloc[0])
+    time.sleep(0.2)
     print("Ready. Starting playback…\n")
 
     # --- Playback loop ---
     t_start = time.perf_counter()
+    n_repetitions = 1
+    for i in range(n_repetitions):
+        for i, (_, row) in enumerate(df.iterrows()):
+            _send_frame(reachy, row, float(dt[i]))
 
-    for i, (_, row) in enumerate(df.iterrows()):
-        _send_frame(reachy, row, float(dt[i]))
+            if i % 50 == 0:
+                elapsed = time.perf_counter() - t_start
+                print(f"  Frame {i + 1:4d} / {n_frames}  ({elapsed:.1f}s elapsed)")
 
-        if i % 50 == 0:
-            elapsed = time.perf_counter() - t_start
-            print(f"  Frame {i + 1:4d} / {n_frames}  ({elapsed:.1f}s elapsed)")
-
-        time.sleep(float(dt[i]))
+            time.sleep(float(dt[i]))
 
     elapsed_total = time.perf_counter() - t_start
     print(f"\nPlayback complete. Total time: {elapsed_total:.2f}s")

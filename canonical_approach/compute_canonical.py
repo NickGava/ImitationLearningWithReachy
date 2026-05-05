@@ -1,7 +1,8 @@
 '''
 compute_canonical.py
 =============================================================================
-Computes the canonical trajectory for each exercise using DBA (DTW Barycenter Averaging).
+Computes the canonical trajectory for each exercise using ShapeDBA
+(ShapeDTW Barycenter Averaging via aeon).
 
 Input: all data/landmarks/subject_XXX/exercise_XXX/video_XXX/joint_ik.csv for the same exercise (for all exercises)
 
@@ -10,8 +11,24 @@ Output: data/dataset/exercise_XXX/canonical.csv
 Usage:
   python compute_canonical.py                           # all exercises, all subjects
   python compute_canonical.py --exercise 1              # only exercise 1
-  python compute_canonical.py --exercise 1 --subject 2  # only subject 2, exercise 1 
-  python compute_canonical.py --max-iter 50             # change number of DBA iterations (default: 30)
+  python compute_canonical.py --exercise 1 --subject 2  # only subject 2, exercise 1
+  python compute_canonical.py --max-iter 50             # change number of ShapeDBA iterations (default: 30)
+  python compute_canonical.py --reach 30                # ShapeDTW neighborhood size (default: 15)
+  python compute_canonical.py --amplitude-percentile 95 # use 95th percentile for rescaling (default: 80)
+  python compute_canonical.py --no-amplitude-rescale    # disable amplitude rescaling
+
+Amplitude rescaling (enabled by default):
+  Before ShapeDBA, each sequence is normalized per-joint to [0, 1] so that the algorithm
+  captures only the temporal shape (timing, velocity profile). After ShapeDBA, the canonical
+  is rescaled back using the Nth percentile of per-demo max values (and the (100-N)th
+  percentile of per-demo min values). This prevents low-amplitude demos from dominating
+  the barycenter and ensures the canonical reaches a realistic full range.
+
+ShapeDBA:
+  Uses ShapeDTW which aligns shape descriptors of subsequences (neighborhoods of size
+  `reach`) instead of raw values, producing smoother, more shape-faithful barycenters.
+  All sequences are resampled to median length before averaging (aeon requires equal-length inputs).
+  Requires: pip install aeon
 '''
 
 import argparse
@@ -20,15 +37,15 @@ import pandas as pd
 from pathlib import Path
 from typing import Optional, List
 from scipy.interpolate import interp1d
-from tslearn.barycenters import dtw_barycenter_averaging
+from scipy.signal import medfilt, savgol_filter
 
 from config import DATA_ROOT, JOINT_COLS, HEAD_COLS
-from data_acquisition.data_cleaning import _OneEuroFilter1D
 
 OUTPUT_COLS = ['frame', 'timestamp'] + JOINT_COLS + HEAD_COLS
 
-# DBA parameter
+# ShapeDBA parameter
 DEFAULT_MAX_ITER = 30
+DEFAULT_REACH    = 15
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -87,48 +104,204 @@ def _load_sequences(landmarks_root: Path, exercise_num: int, filter_subject: Opt
     print(f'\nSequences loaded : {len(sequences)}  |  skipped: {n_skipped}')
     return sequences
 
-def _run_dba(arrays: List[np.ndarray], max_iter: int, label: str) -> np.ndarray:
+def _resample_sequence(arr: np.ndarray, target_len: int) -> np.ndarray:
     '''
-    Runs DBA on a list of numpy arrays and returns the barycenter sequence.
+    Resamples a (N, D) sequence to (target_len, D) using linear interpolation.
+
+    Parameters:
+        arr        : (N, D) array
+        target_len : desired output length
+
+    Returns:
+        (target_len, D) array
+    '''
+    if len(arr) == target_len:
+        return arr
+    t_old = np.linspace(0, 1, len(arr))
+    t_new = np.linspace(0, 1, target_len)
+    return interp1d(t_old, arr, axis=0, kind='linear')(t_new)
+
+
+def _run_shape_dba(
+    arrays: List[np.ndarray],
+    max_iter: int,
+    label: str,
+    reach: int = DEFAULT_REACH,
+) -> np.ndarray:
+    '''
+    Runs ShapeDBA on a list of numpy arrays and returns the barycenter sequence.
+
+    All sequences are resampled to the median length before averaging
+    (aeon's elastic_barycenter_average requires equal-length inputs).
 
     Parameters:
         arrays   : list of (N_i, D) arrays (sequences to average)
-        max_iter : maximum number of DBA iterations
+        max_iter : maximum number of ShapeDBA iterations
         label    : name shown in progress output (e.g. 'joints', 'head')
+        reach    : ShapeDTW neighborhood size for shape descriptors
 
     Returns:
-        (L, D) array : the canonical sequence
+        (L, D) array : the canonical sequence (L = median input length)
     '''
-    # Find the sequence with length closest to the median length
-    init_seq = arrays[int(np.argmin(np.abs(np.array([len(a) for a in arrays]) - np.median([len(a) for a in arrays]))))]
+    from aeon.clustering.averaging import elastic_barycenter_average
 
-    print(f'Running DBA on {label} ({len(arrays)} sequences, max_iter={max_iter}) ...', flush=True)
+    lengths    = np.array([len(a) for a in arrays])
+    median_len = int(np.median(lengths))
 
-    barycenter = dtw_barycenter_averaging(
-        arrays,
-        barycenter_size = len(init_seq),   # target length = median length
-        init_barycenter = init_seq,
-        max_iter        = max_iter,
+    # Sequence closest to median — used as init barycenter
+    init_idx = int(np.argmin(np.abs(lengths - median_len)))
+    init_seq = arrays[init_idx]
+
+    print(f'Running ShapeDBA on {label} ({len(arrays)} sequences, '
+          f'max_iter={max_iter}, reach={reach}) ...', flush=True)
+
+    # Resample all to median length; aeon requires uniform-length 3-D input
+    resampled = [_resample_sequence(a, median_len) for a in arrays]
+
+    # aeon convention: (n_samples, n_channels, n_timepoints) → transpose (L, D) → (D, L)
+    X       = np.stack([a.T for a in resampled], axis=0)   # (S, D, L)
+    init_bc = _resample_sequence(init_seq, median_len).T   # (D, L)
+
+    barycenter_t = elastic_barycenter_average(
+        X,
+        distance        = 'shape_dtw',
+        max_iters       = max_iter,
         tol             = 1e-5,
-        verbose         = False,           # set to True for more detailed convergence info
+        init_barycenter = init_bc,
+        verbose         = False,
+        reach           = reach,
     )
+    # barycenter_t: (D, L) → transpose back to (L, D)
+    barycenter = barycenter_t.T
 
     print(f'Done. Canonical length: {len(barycenter)} frames')
-    return barycenter   # shape: (L, D)
+    return barycenter
 
 # ---------------------------------------------------------------------------
-# Per-exercise processor
+# Amplitude normalisation helpers
 # ---------------------------------------------------------------------------
-def _process_exercise(exercise_num: int, landmarks_root: Path, dataset_root: Path, filter_subject: Optional[int], max_iter: int) -> None:
+def _normalize_amplitude(arrays: List[np.ndarray]):
     '''
-    Loads all joint_ik.csv files for one exercise, runs DBA separately on joint angles and head gaze, and saves the combined canonical.csv.
+    Normalises each sequence per-joint to [0, 1].
+
+    For joints that never move in a given sequence (max == min), the column is
+    left at 0.0 to avoid division by zero — DBA will produce 0.0 for that joint,
+    which is then correctly rescaled back.
 
     Parameters:
-        exercise_num   : exercise number to process
-        landmarks_root : root of the landmarks folder
-        dataset_root   : root of the dataset output folder
-        filter_subject : if set, only use this subject
-        max_iter       : maximum DBA iterations
+        arrays : list of (N_i, D) arrays
+
+    Returns:
+        norm_arrays : list of (N_i, D) arrays in [0, 1]
+        seq_mins    : (S, D) array — per-sequence per-joint min values
+        seq_maxs    : (S, D) array — per-sequence per-joint max values
+    '''
+    seq_mins = np.array([a.min(axis=0) for a in arrays])   # (S, D)
+    seq_maxs = np.array([a.max(axis=0) for a in arrays])   # (S, D)
+
+    norm_arrays = []
+    for a, mn, mx in zip(arrays, seq_mins, seq_maxs):
+        span = mx - mn
+        span_safe = np.where(span == 0, 1.0, span)         # avoid div-by-zero
+        norm_arrays.append((a - mn) / span_safe)
+
+    return norm_arrays, seq_mins, seq_maxs
+
+
+def _rescale_canonical(
+    canonical_norm: np.ndarray,
+    seq_mins: np.ndarray,
+    seq_maxs: np.ndarray,
+    percentile: float,
+) -> np.ndarray:
+    '''
+    Rescales a [0, 1]-normalised canonical back to physical units.
+
+    target_max[j] = percentile(seq_maxs[:, j], p)
+    target_min[j] = percentile(seq_mins[:, j], 100 - p)
+    canonical_rescaled[:, j] = canonical_norm[:, j] * (target_max[j] - target_min[j]) + target_min[j]
+
+    Using the (100-p)th percentile for min is symmetric: e.g. p=95 → 5th
+    percentile for min, which trims the most extreme low-amplitude demos too.
+
+    Parameters:
+        canonical_norm : (L, D) normalised canonical from DBA
+        seq_mins       : (S, D) per-sequence per-joint min values
+        seq_maxs       : (S, D) per-sequence per-joint max values
+        percentile     : percentile p used for target_max (0-100)
+
+    Returns:
+        (L, D) canonical in original physical units
+    '''
+    target_max = np.percentile(seq_maxs, percentile,       axis=0)  # (D,)
+    target_min = np.percentile(seq_mins, 100 - percentile, axis=0)  # (D,)
+
+    span = target_max - target_min
+    canonical_rescaled = canonical_norm * span + target_min
+    return canonical_rescaled
+
+
+def _smooth_canonical(canonical: np.ndarray, window: int) -> np.ndarray:
+    '''
+    Smooths the canonical trajectory per-joint using a median filter followed
+    by a Savitzky-Golay filter.
+
+    Median filter (same window) removes isolated spikes.
+    Savitzky-Golay (window, poly=3) then smooths residual noise while
+    preserving the overall shape and peak amplitudes.
+
+    Parameters:
+        canonical : (L, D) array — canonical joint angles
+        window    : filter window size (must be odd, >= 3)
+
+    Returns:
+        (L, D) smoothed array
+    '''
+    # Ensure window is odd and at least 3
+    window = max(3, window | 1)   # bitwise OR with 1 forces odd
+
+    # Savitzky-Golay requires window < sequence length
+    sg_window = min(window, len(canonical) - (1 if len(canonical) % 2 == 0 else 0))
+    sg_window = max(3, sg_window | 1)
+
+    smoothed = np.empty_like(canonical)
+    for j in range(canonical.shape[1]):
+        col = canonical[:, j]
+        col = medfilt(col, kernel_size=window)          # spike removal
+        col = savgol_filter(col, sg_window, polyorder=3)  # shape-preserving smooth
+        smoothed[:, j] = col
+
+    return smoothed
+
+
+
+def _process_exercise(
+    exercise_num: int,
+    landmarks_root: Path,
+    dataset_root: Path,
+    filter_subject: Optional[int],
+    max_iter: int,
+    amplitude_rescale: bool,
+    amplitude_percentile: float,
+    smooth: bool,
+    smooth_window: int,
+    reach: int = DEFAULT_REACH,
+) -> None:
+    '''
+    Loads all joint_ik.csv files for one exercise, runs ShapeDBA separately on
+    joint angles and head gaze, and saves the combined canonical.csv.
+
+    Parameters:
+        exercise_num         : exercise number to process
+        landmarks_root       : root of the landmarks folder
+        dataset_root         : root of the dataset output folder
+        filter_subject       : if set, only use this subject
+        max_iter             : maximum ShapeDBA iterations
+        amplitude_rescale    : if True, normalise amplitude before ShapeDBA and rescale after
+        amplitude_percentile : percentile used when rescaling (e.g. 80)
+        smooth               : if True, apply median + Savitzky-Golay filter to canonical joints
+        smooth_window        : filter window size (odd integer)
+        reach                : ShapeDTW neighborhood size
     '''
     exercise_name = f'exercise_{exercise_num:03d}'
     print(f'\n{"="*60}')
@@ -150,11 +323,32 @@ def _process_exercise(exercise_num: int, landmarks_root: Path, dataset_root: Pat
     head_available = [df for df in sequences if all(c in df.columns for c in HEAD_COLS) and not df[HEAD_COLS].isna().all().any()]
     head_arrays = [df[HEAD_COLS].values.astype(float) for df in head_available]
 
-    # Run DBA independently on joints and head
-    canonical_joints = _run_dba(joint_arrays, max_iter, label='joints (degrees)')
+    # --- Amplitude normalisation (joints only) ---
+    if amplitude_rescale:
+        print(f'\nAmplitude rescaling ENABLED (percentile={amplitude_percentile})')
+        norm_joint_arrays, seq_mins, seq_maxs = _normalize_amplitude(joint_arrays)
+        canonical_joints_norm = _run_shape_dba(norm_joint_arrays, max_iter, label='joints (normalised [0,1])', reach=reach)
+        canonical_joints = _rescale_canonical(canonical_joints_norm, seq_mins, seq_maxs, amplitude_percentile)
+
+        # Log per-joint rescaling info
+        target_max = np.percentile(seq_maxs, amplitude_percentile, axis=0)
+        target_min = np.percentile(seq_mins, 100 - amplitude_percentile, axis=0)
+        raw_dba_max = canonical_joints_norm.max(axis=0) * (target_max - target_min) + target_min
+        print(f'  {"Joint":<30} {"TargetMin":>10} {"TargetMax":>10}')
+        for j, col in enumerate(JOINT_COLS):
+            print(f'  {col:<30} {target_min[j]:>10.2f} {target_max[j]:>10.2f}')
+    else:
+        print('\nAmplitude rescaling DISABLED')
+        canonical_joints = _run_shape_dba(joint_arrays, max_iter, label='joints (degrees)', reach=reach)
+
+    # --- Smoothing (joint space) ---
+    if smooth:
+        print(f'\nSmoothing canonical joints (median + Savitzky-Golay, window={smooth_window}) ...')
+        canonical_joints = _smooth_canonical(canonical_joints, smooth_window)
+        print('Done.')
 
     if head_arrays:
-        canonical_head = _run_dba(head_arrays, max_iter, label='head (meters)')
+        canonical_head = _run_shape_dba(head_arrays, max_iter, label='head (meters)', reach=reach)
         # canonical_head may have different length than canonical_joints if not all sequences had head data; resample to match joints length
         if len(canonical_head) != len(canonical_joints):
             t_old = np.linspace(0, 1, len(canonical_head))
@@ -198,79 +392,19 @@ def _process_exercise(exercise_num: int, landmarks_root: Path, dataset_root: Pat
     print(f'  Mean duration    : {mean_duration:.2f} s')
     print(f'  Saved -> {output_path.relative_to(DATA_ROOT)}')
 
-    # --- Spike removal + smoothing ---
-    #
-    # Strategy: detect spike frames PER COLUMN and replace them via linear
-    # interpolation from their neighbours. This keeps the frame count intact
-    # (no rows dropped → no gaps → no jerks in simulation).
-    # After interpolation, apply One Euro Filter with parameters tuned for
-    # degree-scale joint data.
-    #
-    # A frame is a spike for column c when its absolute delta from the previous
-    # frame exceeds SPIKE_FACTOR * median(|delta|) for that column.
-    # We expand the mask by ±SPIKE_MARGIN frames to catch the flanks of each spike.
-
-    CANONICAL_FPS    = (L - 1) / float(mean_duration) if (mean_duration > 0 and L > 1) else 30.0
-    SPIKE_FACTOR     = 5        # multiples of median delta to flag a spike
-    SPIKE_MARGIN     = 2        # extra frames masked on each side of a detected spike
-    OEF_MINCUTOFF   = 2.0      # One Euro: higher than default (1.0) → less lag
-    OEF_BETA        = 0.001    # One Euro: gentler speed-based adaptation
-    OEF_DCUTOFF     = 1.0
-
-    df_can     = pd.read_csv(output_path)
-    joint_cols = JOINT_COLS                                           # degrees
-    head_cols  = [c for c in HEAD_COLS if df_can[c].notna().any()]   # metres
-
-    total_replaced = 0
-    for col in joint_cols + head_cols:
-        vals   = df_can[col].to_numpy(dtype=float)
-        deltas = np.abs(np.diff(vals, prepend=vals[0]))
-        med    = np.median(deltas)
-
-        if med < 1e-9:                                  # constant column – skip
-            continue
-
-        spike_mask = deltas > SPIKE_FACTOR * med
-
-        # Expand mask by ±SPIKE_MARGIN
-        if spike_mask.any():
-            indices = np.where(spike_mask)[0]
-            for idx in indices:
-                lo = max(0, idx - SPIKE_MARGIN)
-                hi = min(len(vals) - 1, idx + SPIKE_MARGIN)
-                spike_mask[lo:hi + 1] = True
-
-        if not spike_mask.any():
-            continue
-
-        n_spikes = spike_mask.sum()
-        total_replaced += n_spikes
-
-        # Linear interpolation over masked frames using valid neighbours
-        good_idx  = np.where(~spike_mask)[0]
-        bad_idx   = np.where(spike_mask)[0]
-        if len(good_idx) >= 2:
-            vals[bad_idx] = np.interp(bad_idx, good_idx, vals[good_idx])
-            df_can[col]   = vals
-
-    print(f'  Spike interpolation: {total_replaced} samples replaced across all columns')
-
-    # One Euro Filter smoothing
-    for col in joint_cols + head_cols:
-        f = _OneEuroFilter1D(CANONICAL_FPS, OEF_MINCUTOFF, OEF_BETA, OEF_DCUTOFF)
-        df_can[col] = [f(v) for v in df_can[col]]
-
-    df_can.to_csv(output_path, index=False)
-    print(f'  One Euro Filter applied (fps={CANONICAL_FPS:.1f}, min_cutoff={OEF_MINCUTOFF}, beta={OEF_BETA})')
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description='Compute canonical trajectory via DBA for each exercise.')
+    parser = argparse.ArgumentParser(description='Compute canonical trajectory via ShapeDBA for each exercise.')
     parser.add_argument('--exercise', type=int, default=None, help='Only process this exercise number. Default: all exercises found in landmarks/.')
     parser.add_argument('--subject', type=int, default=None, help='Only use this subject. Default: all subjects.')
-    parser.add_argument('--max-iter', type=int, default=DEFAULT_MAX_ITER, help=f'Maximum DBA iterations (default: {DEFAULT_MAX_ITER}).')
+    parser.add_argument('--max-iter', type=int, default=DEFAULT_MAX_ITER, help=f'Maximum ShapeDBA iterations (default: {DEFAULT_MAX_ITER}).')
+    parser.add_argument('--reach', type=int, default=DEFAULT_REACH, help=f'ShapeDTW neighborhood size (default: {DEFAULT_REACH}).')
+    parser.add_argument('--no-amplitude-rescale', action='store_true', help='Disable amplitude rescaling.')
+    parser.add_argument('--amplitude-percentile', type=float, default=80.0, help='Percentile used when rescaling amplitude (default: 80). 100 = absolute max of all demos.')
+    parser.add_argument('--no-smooth', action='store_true', help='Disable post-ShapeDBA smoothing of the canonical.')
+    parser.add_argument('--smooth-window', type=int, default=11, help='Window size for median + Savitzky-Golay smoothing (default: 11, must be odd).')
     args = parser.parse_args()
 
     landmarks_root = DATA_ROOT / 'landmarks'
@@ -280,9 +414,11 @@ def main():
         print(f'Error: landmarks folder not found -> {landmarks_root}')
         return
 
-    print(f'Landmarks root : {landmarks_root}')
-    print(f'Dataset root   : {dataset_root}')
-    print(f'DBA max iter   : {args.max_iter}')
+    print(f'Landmarks root    : {landmarks_root}')
+    print(f'Dataset root      : {dataset_root}')
+    print(f'ShapeDBA max iter : {args.max_iter}  |  reach={args.reach}')
+    print(f'Amplitude rescale : {not args.no_amplitude_rescale}  (percentile={args.amplitude_percentile})')
+    print(f'Smoothing         : {not args.no_smooth}  (window={args.smooth_window})')
 
     # Collect exercise numbers to process
     if args.exercise is not None:
@@ -302,11 +438,16 @@ def main():
 
     for exercise_num in exercise_nums:
         _process_exercise(
-            exercise_num   = exercise_num,
-            landmarks_root = landmarks_root,
-            dataset_root   = dataset_root,
-            filter_subject = args.subject,
-            max_iter       = args.max_iter,
+            exercise_num         = exercise_num,
+            landmarks_root       = landmarks_root,
+            dataset_root         = dataset_root,
+            filter_subject       = args.subject,
+            max_iter             = args.max_iter,
+            amplitude_rescale    = not args.no_amplitude_rescale,
+            amplitude_percentile = args.amplitude_percentile,
+            smooth               = not args.no_smooth,
+            smooth_window        = args.smooth_window,
+            reach                = args.reach,
         )
 
     print(f'\n{"="*60}')

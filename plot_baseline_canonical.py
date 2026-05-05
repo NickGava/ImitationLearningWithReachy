@@ -18,17 +18,20 @@ Output:
   _data/dataset/exercise_XXX/plots/canonical_fk.png
 
 Usage:
-  python visualize_fk_dataset.py --exercise 1
+  python visualize_dataset_plot.py --exercise 1
 '''
 
 import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 from pathlib import Path
 
 from config import DATA_ROOT, JOINT_COLS
 from data_acquisition.run_ik import fk
+
+Y_PADDING = 0.02    # metres of padding above/below the shared Y range
 
 
 # ---------------------------------------------------------------------------
@@ -52,15 +55,13 @@ def _fk_figure(trajectory: np.ndarray, exercise_num: int, label: str) -> plt.Fig
     l_wrist, l_elbow = [], []
 
     for q_deg in trajectory:
-        # Right arm: joints 0-6 (shoulder_pitch … wrist_roll)
-        q_r = np.deg2rad(q_deg[:7])
-        e_r, w_r, _ = fk(q_r, 'right')
+        q_r = np.deg2rad(np.pad(q_deg[:4], (0, 3)))
+        e_r, w_r = fk(q_r, 'right')
         r_elbow.append(e_r)
         r_wrist.append(w_r)
 
-        # Left arm: joints 8-14
-        q_l = np.deg2rad(q_deg[8:15])
-        e_l, w_l, _ = fk(q_l, 'left')
+        q_l = np.deg2rad(np.pad(q_deg[4:8], (0, 3)))
+        e_l, w_l = fk(q_l, 'left')
         l_elbow.append(e_l)
         l_wrist.append(w_l)
 
@@ -71,7 +72,13 @@ def _fk_figure(trajectory: np.ndarray, exercise_num: int, label: str) -> plt.Fig
 
     frames = np.arange(len(trajectory))
 
-    fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=True)
+    # __________ Shared Y limits across all subplots __________
+    all_values = np.concatenate([r_wrist, r_elbow, l_wrist, l_elbow]).flatten()
+    all_values = all_values[np.isfinite(all_values)]
+    y_min = float(all_values.min()) - Y_PADDING
+    y_max = float(all_values.max()) + Y_PADDING
+
+    fig, axes = plt.subplots(3, 2, figsize=(12, 9), sharex=False)
     fig.suptitle(
         f'FK Verification – Exercise {exercise_num:03d}  [{label}]\n'
         f'(Reachy torso frame: X=forward, Y=left, Z=up)',
@@ -87,18 +94,36 @@ def _fk_figure(trajectory: np.ndarray, exercise_num: int, label: str) -> plt.Fig
     for dim in range(3):
         for col_idx, (side_title, wrist, elbow) in enumerate(sides):
             ax = axes[dim, col_idx]
-            ax.plot(frames, wrist[:, dim], label='wrist', color='#3498db', linewidth=1.5)
-            ax.plot(frames, elbow[:, dim], label='elbow', color='#e67e22', linewidth=1.5, linestyle='--')
-            ax.set_ylabel(axis_labels[dim], fontsize=9)
+            ax.plot(frames, wrist[:, dim], label='wrist',
+                    color='#3498db', linewidth=1.5)
+            ax.plot(frames, elbow[:, dim], label='elbow',
+                    color='#e67e22', linewidth=1.5, linestyle='--')
+
+            # __ Shared Y scale __
+            ax.set_ylim(y_min, y_max)
+            ax.yaxis.set_major_locator(ticker.AutoLocator())
+            ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(2))
+
+            # __ Tick labels everywhere __
+            ax.tick_params(axis='both', labelsize=8)
+
+            # __ Y label: left column only __
+            if col_idx == 0:
+                ax.set_ylabel(axis_labels[dim], fontsize=9)
+
+            # __ Column title: top row only __
             if dim == 0:
                 ax.set_title(side_title, fontsize=10, fontweight='bold')
+
+            # __ X label: bottom row only __
+            if dim == 2:
+                ax.set_xlabel('Frame', fontsize=9)
+
             ax.legend(fontsize=8)
-            ax.grid(alpha=0.3)
+            ax.grid(True, which='major', linestyle='--', linewidth=0.6, alpha=0.7)
+            ax.grid(True, which='minor', linestyle=':',  linewidth=0.4, alpha=0.4)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-
-    for ax in axes[2]:
-        ax.set_xlabel('Frame', fontsize=9)
 
     fig.tight_layout()
     return fig
@@ -144,7 +169,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     sources = [
-        ('baseline',  exercise_dir / 'baseline.csv'),
+        # ('baseline',  exercise_dir / 'baseline.csv'),
         ('canonical', exercise_dir / 'canonical.csv'),
     ]
 
@@ -164,7 +189,7 @@ def main():
         fig      = _fk_figure(trajectory, args.exercise, label)
         out_path = output_dir / f'{label}_fk.png'
         fig.savefig(out_path, dpi=150, bbox_inches='tight')
-        plt.show()
+        # plt.show()
         plt.close(fig)
         print(f'  Saved → {out_path.relative_to(DATA_ROOT)}')
         any_saved = True

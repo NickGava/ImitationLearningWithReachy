@@ -6,10 +6,8 @@ Runs all processing steps in order for one or more videos.
 Steps (in order):
   1. pose_estimation.py / pose_estimation_stereo.py  (auto-detected)
   2. data_cleaning.py
-  3. face_processing.py
-  4. hand_processing.py
-  5. mapping.py
-  6. run_ik.py
+  3. mapping.py
+  4. run_ik.py
 
 Stereo auto-detection:
   video_XXX.mp4        -> pose_estimation.py
@@ -44,10 +42,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "data_acquisition"))
 STEPS = [
     (1, "Pose Estimation",  None),          # module_name resolved at runtime
     (2, "Data Cleaning",    "data_cleaning"),
-    (3, "Face Processing",  "face_processing"),
-    (4, "Hand Processing",  "hand_processing"),
-    (5, "Mapping",          "mapping"),
-    (6, "IK Solver",        "run_ik"),
+    (3, "Mapping",          "mapping"),
+    (4, "IK Solver",        "run_ik"),
+    (5, "Plot pose",        "plot_pose"),
+    (6, "Plot joints",       "plot_joints"),
 ]
 
 RAW_ROOT = DATA_ROOT / "raw_data"
@@ -250,9 +248,9 @@ def main():
     parser.add_argument("--exercise", type=int, default=None)
     parser.add_argument("--video",    type=int, default=None)
     parser.add_argument("--start", type=int, default=1, metavar="N",
-                        help="Start from step N (1-6). Default: 1")
+                        help="Start from step N (1-5). Default: 1")
     parser.add_argument("--stop",  type=int, default=6, metavar="N",
-                        help="Stop after step N (1-6). Default: 6")
+                        help="Stop after step N (1-5). Default: 5")
     args = parser.parse_args()
 
     try:
